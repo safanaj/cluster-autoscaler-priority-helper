@@ -1,14 +1,17 @@
-VERSION = 0.1
-REGISTRY ?= staging-k8s.gcr.io
+VERSION = 0.2
+REGISTRY ?= registry2.swarm.devfactory.com/central
 FLAGS =
 ENVVAR = CGO_ENABLED=0
 GOOS ?= linux
 LDFLAGS ?=
 COMPONENT = cluster-autoscaler-priority-helper
 
-DOCKER_IMAGE = "registry2.swarm.devfactory.com/central/${COMPONENT}:${VERSION}"
+DOCKER_IMAGE = "${REGISTRY}/${COMPONENT}:${VERSION}"
 
 K8S_VERSION = 1.14.8
+CLIGO_VERSION = v11.0.1-0.20191029005444-8e4128053008+incompatible
+OPENAPI_VERSION = v0.0.0-20190816220812-743ec37842bf
+GNOSTIC_VERSION = v0.0.0-20170729233727-0c5108395e2d
 
 .PHONY: build static install_deps deps clean
 
@@ -18,9 +21,13 @@ golang:
 
 install_deps:
 	go get -d \
+		k8s.io/kubernetes@v${K8S_VERSION} \
 		k8s.io/api@kubernetes-${K8S_VERSION} \
 		k8s.io/apimachinery@kubernetes-${K8S_VERSION} \
-		k8s.io/client-go@v11.0.1-0.20191029005444-8e4128053008+incompatible
+		k8s.io/component-base@kubernetes-${K8S_VERSION} \
+		k8s.io/client-go@${CLIGO_VERSION} \
+		k8s.io/kube-openapi@${OPENAPI_VERSION} \
+		github.com/googleapis/gnostic@${GNOSTIC_VERSION}
 
 deps:
 	go mod verify && go mod tidy -v && go mod vendor -v

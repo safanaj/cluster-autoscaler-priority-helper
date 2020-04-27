@@ -57,6 +57,7 @@ func (m *DataManager) Start(stopCh <-chan struct{}, changesCh chan<- struct{}) e
 		for {
 			select {
 			case <-m.stopCh:
+				klog.V(1).Infof("%s: Stopped internal stop channel", m.name)
 				return
 			case <-ticker.C:
 				if err := m.fetch(); err != nil {

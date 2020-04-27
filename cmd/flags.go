@@ -8,8 +8,14 @@ import (
 	goflag "flag"
 	flag "github.com/spf13/pflag"
 
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/tools/clientcmd"
+	"k8s.io/client-go/tools/leaderelection/resourcelock"
+	componentbaseconfig "k8s.io/component-base/config"
 	"k8s.io/klog"
+	"k8s.io/kubernetes/pkg/client/leaderelectionconfig"
+
+	scorerconfig "github.com/safanaj/cluster-autoscaler-priority-helper/pkg/scorer/config"
 )
 
 type Flags struct {
@@ -20,6 +26,9 @@ type Flags struct {
 	overrides              *clientcmd.ConfigOverrides
 	outConfigMapName       string
 
+	leaderElection componentbaseconfig.LeaderElectionConfiguration
+
+	scorerConfig                 scorerconfig.ScorerConfiguration
 	spotAdvisorRefreshInterval   time.Duration
 	asgDiscovererRefreshInterval time.Duration
 	pricerRefreshInterval        time.Duration
@@ -37,6 +46,18 @@ func parseFlags() *Flags {
 				clientcmd.FlagContext, "", "", "The name of the kubeconfig context to use",
 			},
 		})
+
+	flags.leaderElection = componentbaseconfig.LeaderElectionConfiguration{
+		LeaderElect:   true,
+		LeaseDuration: metav1.Duration{Duration: 60 * time.Second},
+		RenewDeadline: metav1.Duration{Duration: 30 * time.Second},
+		RetryPeriod:   metav1.Duration{Duration: 5 * time.Second},
+		ResourceLock:  resourcelock.EndpointsResourceLock,
+	}
+	leaderelectionconfig.BindFlags(&flags.leaderElection, flag.CommandLine)
+
+	flags.scorerConfig = scorerconfig.ScorerConfiguration{}
+	scorerconfig.BindFlags(&flags.scorerConfig, flag.CommandLine)
 
 	flag.BoolVar(&flags.version, "version", false, "Print version and exit")
 

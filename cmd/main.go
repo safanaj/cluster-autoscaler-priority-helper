@@ -1,11 +1,11 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"os/signal"
 	"syscall"
-	"time"
 
 	"github.com/safanaj/cluster-autoscaler-priority-helper/pkg/aws"
 	"github.com/safanaj/cluster-autoscaler-priority-helper/pkg/nodes"
@@ -15,6 +15,7 @@ import (
 )
 
 const priorityConfigMapName = "cluster-autoscaler-priority-expander"
+const systemNamespace = "kube-system"
 
 var version string
 
@@ -53,16 +54,18 @@ func main() {
 		panic(err.Error())
 	}
 
-	stopCh := make(chan struct{})
-	err = scorer.NewScorer(cs, priorityConfigMapName, flags.scorerRefreshInterval, sad, asgD, nd, pricer).Start(stopCh)
-	if err != nil {
-		panic(err.Error())
-	}
+	scorer := scorer.NewScorer(
+		context.Background(), flags.leaderElection,
+		cs, priorityConfigMapName, systemNamespace, flags.scorerRefreshInterval,
+		sad, asgD, nd, pricer,
+		flags.scorerConfig)
 
 	c := make(chan os.Signal, 1)
 	signal.Notify(c, syscall.SIGINT, syscall.SIGTERM)
-	<-c
-	close(stopCh)
+	go func() {
+		<-c
+		scorer.Exit()
+	}()
 
-	time.Sleep(2 * time.Second)
+	scorer.Run()
 }

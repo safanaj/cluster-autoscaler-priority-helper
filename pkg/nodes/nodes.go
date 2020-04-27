@@ -68,49 +68,6 @@ func NewNodesDistribution(clientset clientset.Interface) (*NodesDistribution, er
 		nodeLister:   factory.Core().V1().Nodes().Lister(),
 	}
 
-	// nodeEventHandler := cache.ResourceEventHandlerFuncs{
-	// 	AddFunc: func(obj interface{}) {
-	// 		if node, ok := obj.(*corev1.Node); ok {
-	// 			if k, ok := instanceTypeAZKeyFromNode(node); ok {
-	// 				if _, ok := nodes.data.instanceTypeAZCount[k]; ok {
-	// 					nodes.data.instanceTypeAZCount[k]++
-	// 				} else {
-	// 					nodes.data.instanceTypeAZCount[k] = 1
-	// 				}
-	// 				nodes.lastChange = time.Now()
-	// 				klog.V(2).Infof("Nodes distribution changed at %s", nodes.lastChange.String())
-	// 				// notify for changes w/o blocking
-	// 				select {
-	// 				case changesCh <- struct{}{}:
-	// 				default:
-	// 				}
-	// 			}
-	// 		}
-	// 	},
-	// 	DeleteFunc: func(obj interface{}) {
-	// 		if node, ok := obj.(*corev1.Node); ok {
-	// 			if k, ok := instanceTypeAZKeyFromNode(node); ok {
-	// 				if _, ok := nodes.data.instanceTypeAZCount[k]; ok {
-	// 					nodes.data.instanceTypeAZCount[k]--
-	// 				}
-	// 				nodes.lastChange = time.Now()
-	// 				klog.V(2).Infof("Nodes distribution changed at %s", nodes.lastChange.String())
-	// 				// notify for changes w/o blocking
-	// 				select {
-	// 				case changesCh <- struct{}{}:
-	// 				default:
-	// 				}
-	// 			}
-	// 		}
-	// 	},
-	// }
-	// nodes.nodeInformer.AddEventHandler(nodeEventHandler)
-	// factory.Start(stopCh)
-	// for _, ok := range factory.WaitForCacheSync(stopCh) {
-	// 	if !ok {
-	// 		return nil, fmt.Errorf("node informer did not sync")
-	// 	}
-	// }
 	return nodes, nil
 }
 
