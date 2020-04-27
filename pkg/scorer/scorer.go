@@ -326,17 +326,8 @@ func (s *Scorer) computeScores() map[int][]string {
 	return priorities
 }
 
-const (
-	malusForOnDemand               = 500
-	bonusForSpot                   = 100
-	malusForProbability            = 150
-	malusForNodeDistribution       = 10
-	malusForNodeDistributionAZOnly = 10
-	malusForPrice                  = 100
-)
-
 func (s *Scorer) computeScoreForASG(asgName string) (int, error) {
-	prio := 1000
+	prio := s.config.BasePriority
 	klog.V(4).Infof("Scorer compute priority for %s\t initial prio=%d", asgName, prio)
 	iDetails, err := s.asgDiscoverer.GetInstanceDetailsFor(asgName)
 	if err != nil {
@@ -376,7 +367,6 @@ func (s *Scorer) computeScoreForASG(asgName string) (int, error) {
 	// 	prio -= ((cores * 2) + ramgb)
 	// }
 
-	// TODO consider prices
 	if price, found := s.pricer.GetPriceFor(iDetails.InstanceType, iDetails.AvailabilityZone, iDetails.IsSpot); found {
 		prio -= int(price * float64(s.config.MalusForPrice))
 		klog.V(4).Infof("Scorer compute priority for %s\t (price) prio-=int(%f*%d) (prio=%d)", asgName, price, s.config.MalusForPrice, prio)

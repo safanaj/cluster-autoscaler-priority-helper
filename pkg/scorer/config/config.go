@@ -5,6 +5,7 @@ import (
 )
 
 const (
+	basePriority                   = 1000
 	malusForOnDemand               = 500
 	bonusForSpot                   = 100
 	malusForProbability            = 150
@@ -14,6 +15,7 @@ const (
 )
 
 type ScorerConfiguration struct {
+	BasePriority                   int
 	MalusForOnDemand               int
 	BonusForSpot                   int
 	MalusForProbability            int
@@ -23,6 +25,7 @@ type ScorerConfiguration struct {
 }
 
 func BindFlags(sc *ScorerConfiguration, fs *pflag.FlagSet) {
+	fs.IntVar(&sc.BasePriority, "base-priority", basePriority, "")
 	fs.IntVar(&sc.MalusForOnDemand, "malus-for-ondemand", malusForOnDemand, "")
 	fs.IntVar(&sc.BonusForSpot, "bonus-for-spot", bonusForSpot, "")
 	fs.IntVar(&sc.MalusForProbability, "malus-for-probability", malusForProbability, "")
