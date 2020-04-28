@@ -39,7 +39,7 @@ type ASGDiscoverer struct {
 var _ fetcher.Fetcher = &ASGDiscoverer{}
 
 func NewASGDiscoverer(refreshInterval time.Duration, autoDiscoveryTags map[string]string) (*ASGDiscoverer, error) {
-	sess := session.New(aws.NewConfig().WithCredentialsChainVerboseErrors(true))
+	sess := session.New(getAwsConfig())
 	asgDiscoverer := &ASGDiscoverer{
 		session:                              sess,
 		svc:                                  autoscaling.New(sess),

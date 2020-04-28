@@ -30,7 +30,7 @@ type Pricer struct {
 var _ fetcher.Fetcher = &Pricer{}
 
 func NewPricer(refreshInterval time.Duration) (*Pricer, error) {
-	sess := session.New(aws.NewConfig().WithCredentialsChainVerboseErrors(true))
+	sess := session.New(getAwsConfig())
 	pricer := &Pricer{
 		session: sess,
 		svc:     ec2.New(sess),
