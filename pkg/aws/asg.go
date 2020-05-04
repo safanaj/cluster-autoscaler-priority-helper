@@ -34,6 +34,8 @@ type ASGDiscoverer struct {
 
 	launchConfigurationInstanceTypeCache map[string]utils.InstanceDetails
 	launchTemplateInstanceTypeCache      map[string]utils.InstanceDetails
+
+	asgToMixedInstanceTypesAndAZ map[string]utils.MixedInstanceTypesDetails
 }
 
 var _ fetcher.Fetcher = &ASGDiscoverer{}
@@ -157,21 +159,29 @@ func (asgd *ASGDiscoverer) getInstanceTypeByLCName(name string) (utils.InstanceD
 }
 
 type launchTemplate struct {
+	id      string
 	name    string
 	version string
 }
 
 func (asgd *ASGDiscoverer) getInstanceTypeByLT(launchTemplate *launchTemplate) (utils.InstanceDetails, error) {
 	ltCacheKey := fmt.Sprintf("%s---%s", launchTemplate.name, launchTemplate.version)
+	if launchTemplate.name == "" && launchTemplate.id != "" {
+		ltCacheKey = fmt.Sprintf("%s---%s", launchTemplate.id, launchTemplate.version)
+	}
 	if iDetails, found := asgd.launchTemplateInstanceTypeCache[ltCacheKey]; found {
 		return iDetails, nil
 	}
 
 	params := &ec2.DescribeLaunchTemplateVersionsInput{
-		LaunchTemplateName: aws.String(launchTemplate.name),
-		Versions:           []*string{aws.String(launchTemplate.version)},
+		Versions: []*string{aws.String(launchTemplate.version)},
 	}
-
+	if launchTemplate.name != "" {
+		params.LaunchTemplateName = aws.String(launchTemplate.name)
+	}
+	if launchTemplate.name == "" && launchTemplate.id != "" {
+		params.LaunchTemplateId = aws.String(launchTemplate.id)
+	}
 	describeData, err := asgd.ec2svc.DescribeLaunchTemplateVersions(params)
 	if err != nil {
 		return utils.InstanceDetails{}, err
@@ -189,7 +199,14 @@ func (asgd *ASGDiscoverer) getInstanceTypeByLT(launchTemplate *launchTemplate) (
 		return utils.InstanceDetails{}, fmt.Errorf("unable to find instance type within launch template")
 	}
 
-	return utils.InstanceDetails{InstanceType: aws.StringValue(instanceType), IsSpot: isSpot}, nil
+	iDetails := utils.InstanceDetails{InstanceType: aws.StringValue(instanceType), IsSpot: isSpot}
+	launchTemplate.name = aws.StringValue(lt.LaunchTemplateName)
+	launchTemplate.id = aws.StringValue(lt.LaunchTemplateId)
+	ltCacheKey = fmt.Sprintf("%s---%s", launchTemplate.name, launchTemplate.version)
+	asgd.launchTemplateInstanceTypeCache[ltCacheKey] = iDetails
+	ltCacheKey = fmt.Sprintf("%s---%s", launchTemplate.id, launchTemplate.version)
+	asgd.launchTemplateInstanceTypeCache[ltCacheKey] = iDetails
+	return iDetails, nil
 }
 
 func (asgd *ASGDiscoverer) GetData() (interface{}, error) {
@@ -202,6 +219,8 @@ func (asgd *ASGDiscoverer) ProcessData(data interface{}) error {
 	asgToInstanceTypeAndAZ := make(map[string]string)
 	instanceTypeAndAZToAsg := make(map[string]string)
 
+	asgToMixedInstanceTypesAndAZ := make(map[string]utils.MixedInstanceTypesDetails)
+
 	instanceTypesList := []*string{}
 	instanceTypesMap := make(map[string]struct{})
 
@@ -209,6 +228,8 @@ func (asgd *ASGDiscoverer) ProcessData(data interface{}) error {
 		var err error
 		var asgName, az string
 		var iDetails utils.InstanceDetails
+		var mDetails utils.MixedInstanceTypesDetails
+		var isMixedInstances bool
 		if len(asg.AvailabilityZones) > 0 {
 			az = aws.StringValue(asg.AvailabilityZones[0])
 		}
@@ -228,8 +249,13 @@ func (asgd *ASGDiscoverer) ProcessData(data interface{}) error {
 				version = aws.StringValue(asg.LaunchTemplate.Version)
 			}
 			lt := &launchTemplate{
-				name:    aws.StringValue(asg.LaunchTemplate.LaunchTemplateName),
 				version: version,
+			}
+			if asg.LaunchTemplate.LaunchTemplateName != nil {
+				lt.name = aws.StringValue(asg.LaunchTemplate.LaunchTemplateName)
+			}
+			if asg.LaunchTemplate.LaunchTemplateId != nil {
+				lt.id = aws.StringValue(asg.LaunchTemplate.LaunchTemplateId)
 			}
 			if iDetails, err = asgd.getInstanceTypeByLT(lt); err != nil {
 				err = fmt.Errorf("Error getting instance type from LT: %s, %v",
@@ -237,18 +263,69 @@ func (asgd *ASGDiscoverer) ProcessData(data interface{}) error {
 				klog.Errorf(err.Error())
 				return err
 			}
+		} else if asg.MixedInstancesPolicy != nil {
+			var version string
+			var ltiDetails utils.InstanceDetails
+			ltSpec := asg.MixedInstancesPolicy.LaunchTemplate.LaunchTemplateSpecification
+			if ltSpec.Version == nil {
+				version = "$Default"
+			} else {
+				version = aws.StringValue(ltSpec.Version)
+			}
+			lt := &launchTemplate{
+				version: version,
+			}
+			if ltSpec.LaunchTemplateName != nil {
+				lt.name = aws.StringValue(ltSpec.LaunchTemplateName)
+			}
+			if ltSpec.LaunchTemplateId != nil {
+				lt.id = aws.StringValue(ltSpec.LaunchTemplateId)
+			}
+			if ltiDetails, err = asgd.getInstanceTypeByLT(lt); err != nil {
+				err = fmt.Errorf("Error getting instance type from LT: %s, %v",
+					fmt.Sprintf("%s (v %s)", lt.name, lt.version), err)
+				klog.Errorf(err.Error())
+				return err
+			}
+
+			if len(asg.MixedInstancesPolicy.LaunchTemplate.Overrides) == 0 {
+				iDetails.IsSpot = ltiDetails.IsSpot
+				iDetails.InstanceType = ltiDetails.InstanceType
+			} else if len(asg.MixedInstancesPolicy.LaunchTemplate.Overrides) == 1 {
+				iDetails.IsSpot = ltiDetails.IsSpot
+				lto := asg.MixedInstancesPolicy.LaunchTemplate.Overrides[0]
+				iDetails.InstanceType = aws.StringValue(lto.InstanceType)
+			} else {
+				var instanceTypes []string
+				isMixedInstances = true
+				// fill an ad-hoc structure
+				mDetails.InstanceDetails.IsSpot = ltiDetails.IsSpot
+				for _, o := range asg.MixedInstancesPolicy.LaunchTemplate.Overrides {
+					if o.InstanceType != nil {
+						instanceTypes = append(instanceTypes, aws.StringValue(o.InstanceType))
+						instanceTypesMap[aws.StringValue(o.InstanceType)] = struct{}{}
+					}
+				}
+			}
 		}
 
 		// fill caches
-		asgName = aws.StringValue(asg.AutoScalingGroupName)
-		iDetails.AvailabilityZone = az
-		asgToInstanceTypeAndAZ[asgName] = iDetails.String()
-		instanceTypeAndAZToAsg[iDetails.String()] = asgName
-		instanceTypesMap[iDetails.InstanceType] = struct{}{}
+		if !isMixedInstances {
+			asgName = aws.StringValue(asg.AutoScalingGroupName)
+			iDetails.AvailabilityZone = az
+			asgToInstanceTypeAndAZ[asgName] = iDetails.String()
+			instanceTypeAndAZToAsg[iDetails.String()] = asgName
+			instanceTypesMap[iDetails.InstanceType] = struct{}{}
+		} else {
+			// fill an ad-hoc structure
+			mDetails.InstanceDetails.AvailabilityZone = az
+			asgToMixedInstanceTypesAndAZ[asgName] = mDetails
+		}
 	}
 
 	asgd.asgToInstanceTypeAndAZ = asgToInstanceTypeAndAZ
 	asgd.instanceTypeAndAZToAsg = instanceTypeAndAZToAsg
+	asgd.asgToMixedInstanceTypesAndAZ = asgToMixedInstanceTypesAndAZ
 
 	for itype, _ := range instanceTypesMap {
 		instanceTypesList = append(instanceTypesList, aws.String(itype))
@@ -273,6 +350,20 @@ func (asgd *ASGDiscoverer) GetASGsData() (map[string]string, error) {
 	asgd.DataManager.RLock()
 	defer asgd.DataManager.RUnlock()
 	return asgd.asgToInstanceTypeAndAZ, nil
+}
+
+func (asgd *ASGDiscoverer) GetDetailsFor(asgName string) (utils.DetailsResult, error) {
+	asgd.DataManager.RLock()
+	defer asgd.DataManager.RUnlock()
+	iDetails := utils.InstanceDetails{}
+	if res, ok := asgd.asgToInstanceTypeAndAZ[asgName]; ok {
+		(&iDetails).FromString(res)
+		return iDetails, nil
+	}
+	if res, ok := asgd.asgToMixedInstanceTypesAndAZ[asgName]; ok {
+		return res, nil
+	}
+	return iDetails, fmt.Errorf("No details found for %s", asgName)
 }
 
 func (asgd *ASGDiscoverer) GetAsgFromInstanceDetails(details utils.InstanceDetails) (string, error) {

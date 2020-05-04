@@ -18,16 +18,16 @@ func detectCurrentRegion() (string, error) {
 		resp *http.Response
 	)
 
-	if resp, err = http.Get(url); err != nil {
-		return nil, err
+	if resp, err = http.Get(METADATA_AZ_URL); err != nil {
+		return "", err
 	}
 	defer resp.Body.Close()
 
 	if body, err = ioutil.ReadAll(resp.Body); err != nil {
-		return nil, err
+		return "", err
 	}
 	if len(body) < 2 {
-		return nil, fmt.Errorf("Invalid AZ detected: %v", body)
+		return "", fmt.Errorf("Invalid AZ detected: %v", body)
 	}
 	return string(body[:len(body)-1]), nil
 }

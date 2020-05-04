@@ -27,6 +27,7 @@ import (
 	"github.com/safanaj/cluster-autoscaler-priority-helper/pkg/aws"
 	"github.com/safanaj/cluster-autoscaler-priority-helper/pkg/nodes"
 	"github.com/safanaj/cluster-autoscaler-priority-helper/pkg/spotadvisor"
+	"github.com/safanaj/cluster-autoscaler-priority-helper/pkg/utils"
 
 	"k8s.io/klog"
 )
@@ -327,13 +328,34 @@ func (s *Scorer) computeScores() map[int][]string {
 }
 
 func (s *Scorer) computeScoreForASG(asgName string) (int, error) {
+	var iDetails utils.InstanceDetails
 	prio := s.config.BasePriority
 	klog.V(4).Infof("Scorer compute priority for %s\t initial prio=%d", asgName, prio)
-	iDetails, err := s.asgDiscoverer.GetInstanceDetailsFor(asgName)
+	rDetails, err := s.asgDiscoverer.GetDetailsFor(asgName)
 	if err != nil {
 		klog.Errorf(err.Error())
 		return -1, err
 	}
+	if rDetails.IsMixedInstanceTypes() {
+		mDetails := rDetails.(utils.MixedInstanceTypesDetails)
+		iDetails.IsSpot = mDetails.InstanceDetails.IsSpot
+		iDetails.AvailabilityZone = mDetails.InstanceDetails.AvailabilityZone
+		// figure out which instance type will be bringed up assuming that
+		// on the ASG mixed instance type policy has strategy == capacity-optimized
+		// and that implies that AWS will choose the instance type with lower spot termination probability
+		// This assumption is speculative, be warned
+		prob := 10
+		for _, it := range mDetails.InstanceTypes {
+			itProb := s.spotAdvisor.GetProbabilityFor(mDetails.GetRegion(), "Linux", it)
+			if prob > itProb {
+				prob = itProb
+				iDetails.InstanceType = it
+			}
+		}
+	} else {
+		iDetails = rDetails.(utils.InstanceDetails)
+	}
+
 	// logic to score an instance type in a zone
 	if iDetails.IsSpot {
 		prio += s.config.BonusForSpot
