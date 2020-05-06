@@ -322,11 +322,12 @@ func (s *Scorer) updateConfigMap() error {
 
 func (s *Scorer) computeScores() map[int][]string {
 	var priorities map[int][]string
-	if asgsData, err := s.asgDiscoverer.GetASGsData(); err != nil {
+	if asgNames, err := s.asgDiscoverer.GetASGNames(); err != nil {
 		klog.Errorf("Error computing scores: %v", err)
 	} else {
 		priorities = make(map[int][]string)
-		for asgName, _ := range asgsData {
+		klog.V(2).Infof("computeScores GetASGNames() => %v\n", asgNames)
+		for _, asgName := range asgNames {
 			prio, err := s.computeScoreForASG(asgName)
 			if err != nil {
 				continue

@@ -199,7 +199,10 @@ func (asgd *ASGDiscoverer) getInstanceTypeByLT(launchTemplate *launchTemplate) (
 	lt := describeData.LaunchTemplateVersions[0]
 	klog.V(6).Infof("DescribeLaunchTemplateVersions() => LaunchTemplateData: %v\n", lt.LaunchTemplateData)
 	instanceType := lt.LaunchTemplateData.InstanceType
-	isSpot := aws.StringValue(lt.LaunchTemplateData.InstanceMarketOptions.MarketType) == ec2.MarketTypeSpot
+	isSpot := false
+	if lt.LaunchTemplateData.InstanceMarketOptions != nil && lt.LaunchTemplateData.InstanceMarketOptions.MarketType != nil {
+		isSpot = aws.StringValue(lt.LaunchTemplateData.InstanceMarketOptions.MarketType) == ec2.MarketTypeSpot
+	}
 
 	if instanceType == nil {
 		return utils.InstanceDetails{}, fmt.Errorf("unable to find instance type within launch template")
@@ -294,6 +297,14 @@ func (asgd *ASGDiscoverer) ProcessData(data interface{}) error {
 				return err
 			}
 
+			// in case of MixedInstancesPolicy the LaunchTemplate is not containing the "market options"
+			// to detect if it is a spot or not we are assuming the convention
+			// to have 0 as OnDemandPercentageAboveBaseCapacity in the ASG definition
+			odpabc := asg.MixedInstancesPolicy.InstancesDistribution.OnDemandPercentageAboveBaseCapacity
+			if odpabc != nil {
+				ltiDetails.IsSpot = (aws.Int64Value(odpabc) == 0)
+			}
+
 			if len(asg.MixedInstancesPolicy.LaunchTemplate.Overrides) == 0 {
 				iDetails.IsSpot = ltiDetails.IsSpot
 				iDetails.InstanceType = ltiDetails.InstanceType
@@ -312,12 +323,13 @@ func (asgd *ASGDiscoverer) ProcessData(data interface{}) error {
 						instanceTypesMap[aws.StringValue(o.InstanceType)] = struct{}{}
 					}
 				}
+				mDetails.InstanceTypes = instanceTypes
 			}
 		}
 
+		asgName = aws.StringValue(asg.AutoScalingGroupName)
 		// fill caches
 		if !isMixedInstances {
-			asgName = aws.StringValue(asg.AutoScalingGroupName)
 			iDetails.AvailabilityZone = az
 			asgToInstanceTypeAndAZ[asgName] = iDetails.String()
 			instanceTypeAndAZToAsg[iDetails.String()] = asgName
@@ -355,10 +367,17 @@ func (asgd *ASGDiscoverer) GetLastChanges() time.Time {
 	return asgd.DataManager.GetLastChanges()
 }
 
-func (asgd *ASGDiscoverer) GetASGsData() (map[string]string, error) {
+func (asgd *ASGDiscoverer) GetASGNames() ([]string, error) {
 	asgd.DataManager.RLock()
 	defer asgd.DataManager.RUnlock()
-	return asgd.asgToInstanceTypeAndAZ, nil
+	asgs := []string{}
+	for asgName, _ := range asgd.asgToInstanceTypeAndAZ {
+		asgs = append(asgs, asgName)
+	}
+	for asgName, _ := range asgd.asgToMixedInstanceTypesAndAZ {
+		asgs = append(asgs, asgName)
+	}
+	return asgs, nil
 }
 
 func (asgd *ASGDiscoverer) GetDetailsFor(asgName string) (utils.DetailsResult, error) {
@@ -373,6 +392,12 @@ func (asgd *ASGDiscoverer) GetDetailsFor(asgName string) (utils.DetailsResult, e
 		return res, nil
 	}
 	return iDetails, fmt.Errorf("No details found for %s", asgName)
+}
+
+func (asgd *ASGDiscoverer) GetASGsData() (map[string]string, error) {
+	asgd.DataManager.RLock()
+	defer asgd.DataManager.RUnlock()
+	return asgd.asgToInstanceTypeAndAZ, nil
 }
 
 func (asgd *ASGDiscoverer) GetAsgFromInstanceDetails(details utils.InstanceDetails) (string, error) {
