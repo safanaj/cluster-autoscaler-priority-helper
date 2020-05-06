@@ -105,17 +105,34 @@ func NewScorer(
 }
 
 func (s *Scorer) Run() {
-	lock := getLeaderLock(s)
+	if s.lec.LeaderElect {
+		lock := getLeaderLock(s)
 
-	for {
-		select {
-		case <-s.ctx.Done():
-			klog.Infof("Context canceled, exiting")
-			return
-		default:
-			// start the leader election code loop
-			runLeaderElection(s, lock)
+		for {
+			select {
+			case <-s.ctx.Done():
+				klog.Infof("Context canceled, exiting")
+				return
+			default:
+				// start the leader election code loop
+				runLeaderElection(s, lock)
+			}
 		}
+	} else {
+		for {
+			select {
+			case <-s.ctx.Done():
+				klog.Infof("Context canceled, exiting")
+				return
+			default:
+				err := s.Start()
+				if err != nil {
+					panic(err.Error())
+				}
+				<-s.internalCtx.Done()
+			}
+		}
+
 	}
 }
 
