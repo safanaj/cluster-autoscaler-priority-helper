@@ -78,6 +78,8 @@ func (asgd *ASGDiscoverer) getASGsByTags() (*autoscaling.DescribeAutoScalingGrou
 	tags := []*autoscaling.TagDescription{}
 	res := &autoscaling.DescribeAutoScalingGroupsOutput{}
 
+	klog.V(6).Infof("DescribeTagsPages: with filters %v -- autoDiscoveryTags: %v\n",
+		filters, asgd.autoDiscoveryTags)
 	if err := asgd.svc.DescribeTagsPages(&autoscaling.DescribeTagsInput{
 		Filters:    filters,
 		MaxRecords: aws.Int64(100),
@@ -87,6 +89,7 @@ func (asgd *ASGDiscoverer) getASGsByTags() (*autoscaling.DescribeAutoScalingGrou
 		// results, if any.
 		return true
 	}); err != nil {
+		klog.Errorf("DescribeTagsPages: %v\n", asgd.autoDiscoveryTags)
 		return res, err
 	}
 
@@ -124,6 +127,7 @@ func (asgd *ASGDiscoverer) getASGsByTags() (*autoscaling.DescribeAutoScalingGrou
 			// results, if any.
 			return true
 		}); err != nil {
+			klog.Errorf("DescribeAutoScalingGroupsPages: %v\n", asgNames)
 			return res, err
 		}
 	}
@@ -191,7 +195,9 @@ func (asgd *ASGDiscoverer) getInstanceTypeByLT(launchTemplate *launchTemplate) (
 		return utils.InstanceDetails{}, fmt.Errorf("unable to find template versions")
 	}
 
+	klog.V(6).Infof("DescribeLaunchTemplateVersions() => versions len: %d\n", len(describeData.LaunchTemplateVersions))
 	lt := describeData.LaunchTemplateVersions[0]
+	klog.V(6).Infof("DescribeLaunchTemplateVersions() => LaunchTemplateData: %v\n", lt.LaunchTemplateData)
 	instanceType := lt.LaunchTemplateData.InstanceType
 	isSpot := aws.StringValue(lt.LaunchTemplateData.InstanceMarketOptions.MarketType) == ec2.MarketTypeSpot
 
@@ -327,12 +333,15 @@ func (asgd *ASGDiscoverer) ProcessData(data interface{}) error {
 	asgd.instanceTypeAndAZToAsg = instanceTypeAndAZToAsg
 	asgd.asgToMixedInstanceTypesAndAZ = asgToMixedInstanceTypesAndAZ
 
+	instanceTypesStingList := []string{}
 	for itype, _ := range instanceTypesMap {
 		instanceTypesList = append(instanceTypesList, aws.String(itype))
+		instanceTypesStingList = append(instanceTypesStingList, itype)
 	}
 	knownInstanceTypesListMu.Lock()
 	defer knownInstanceTypesListMu.Unlock()
 	knownInstanceTypesList = instanceTypesList
+	klog.V(4).Infof("knownInstanceTypesList: %v\n", instanceTypesStingList)
 
 	return nil
 }
