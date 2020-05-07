@@ -362,11 +362,26 @@ func (s *Scorer) computeScoreForASG(asgName string) (int, error) {
 		// on the ASG mixed instance type policy has strategy == capacity-optimized
 		// and that implies that AWS will choose the instance type with lower spot termination probability
 		// This assumption is speculative, be warned
-		prob := 10
+		//
+		// This assumption is speculative (and barely wrong), the capacity-optimized is more like a prediction,
+		// the spot termination probabiliy is a statistical data based on last 30-days
+		//
+		// prob := 10
+		// for _, it := range mDetails.InstanceTypes {
+		// 	itProb := s.spotAdvisor.GetProbabilityFor(mDetails.GetRegion(), "Linux", it)
+		// 	if prob > itProb {
+		// 		prob = itProb
+		// 		iDetails.InstanceType = it
+		// 	}
+		// }
+		//
+		// Try to be pessimist and look at the worst price, in case of MixedInstanceTypes we won't evaluate
+		// termination probability based on spot advisor data.
+		//
+		highest := float64(0.0)
 		for _, it := range mDetails.InstanceTypes {
-			itProb := s.spotAdvisor.GetProbabilityFor(mDetails.GetRegion(), "Linux", it)
-			if prob > itProb {
-				prob = itProb
+			if itPrice, found := s.pricer.GetPriceFor(it, iDetails.AvailabilityZone, iDetails.IsSpot); found && highest <= itPrice {
+				highest = itPrice
 				iDetails.InstanceType = it
 			}
 		}
@@ -374,7 +389,6 @@ func (s *Scorer) computeScoreForASG(asgName string) (int, error) {
 		iDetails = rDetails.(utils.InstanceDetails)
 	}
 
-	// logic to score an instance type in a zone
 	if iDetails.IsSpot {
 		prio += s.config.BonusForSpot
 		klog.V(3).Infof("Scorer compute priority for %s\t prio+=%d because is spot (prio=%d)", asgName, s.config.BonusForSpot, prio)
@@ -383,17 +397,23 @@ func (s *Scorer) computeScoreForASG(asgName string) (int, error) {
 		klog.V(3).Infof("Scorer compute priority for %s\t prio-=%d because is ondemand (prio=%d)", asgName, s.config.MalusForOnDemand, prio)
 	}
 
-	saving := s.spotAdvisor.GetSavingFor(iDetails.GetRegion(), "Linux", iDetails.InstanceType)
-	probability := s.spotAdvisor.GetProbabilityFor(iDetails.GetRegion(), "Linux", iDetails.InstanceType)
-	if saving >= 0 && probability >= 0 && iDetails.IsSpot {
-		// prio += saving
-		prio -= (probability * s.config.MalusForProbability)
-		klog.V(3).Infof("Scorer compute priority for %s\t (probability is %d) prio-=%d*%d (prio=%d)",
-			asgName, probability, probability, s.config.MalusForProbability, prio)
-		count := s.nodesDistribution.GetCountFor(iDetails.InstanceType, iDetails.AvailabilityZone, "spot")
+	if iDetails.IsSpot {
+		instanceTypes := rDetails.GetInstanceTypes()
+		count := 0
+		totProb := 0
+		for _, it := range instanceTypes {
+			count += s.nodesDistribution.GetCountFor(it, iDetails.AvailabilityZone, "spot")
+			totProb += s.spotAdvisor.GetProbabilityFor(iDetails.GetRegion(), "Linux", it)
+		}
+		avgProb := totProb / len(instanceTypes)
+
+		prio -= (avgProb * s.config.MalusForProbability)
+		klog.V(3).Infof("Scorer compute priority for %s\t (probability on average is %d) prio-=%d*%d (prio=%d) %v",
+			asgName, avgProb, avgProb, s.config.MalusForProbability, prio, instanceTypes)
+
 		prio -= (count * s.config.MalusForNodeDistribution)
-		klog.V(3).Infof("Scorer compute priority for %s\t (node distribution, same type in same zone) prio-=%d*%d (prio=%d)",
-			asgName, count, s.config.MalusForNodeDistribution, prio)
+		klog.V(3).Infof("Scorer compute priority for %s\t (node distribution, same type in same zone) prio-=%d*%d (prio=%d) %v",
+			asgName, count, s.config.MalusForNodeDistribution, prio, instanceTypes)
 	} else {
 		count := s.nodesDistribution.GetCountForAZ(iDetails.AvailabilityZone)
 		prio -= (count * s.config.MalusForNodeDistributionAZOnly)
