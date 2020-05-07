@@ -45,10 +45,29 @@ const (
 	nonSpotStr string = "ondemand"
 )
 
+type DetailsResult interface {
+	IsMixedInstanceTypes() bool
+	GetInstanceTypes() []string
+	GetRegion() string
+}
+
 type InstanceDetails struct {
 	InstanceType     string
 	AvailabilityZone string
 	IsSpot           bool
+}
+
+func (i InstanceDetails) IsMixedInstanceTypes() bool {
+	return false
+}
+func (i InstanceDetails) GetInstanceTypes() []string {
+	return []string{i.InstanceType}
+}
+func (i InstanceDetails) GetRegion() string {
+	if len(i.AvailabilityZone) == 0 {
+		return "Unknown"
+	}
+	return i.AvailabilityZone[0 : len(i.AvailabilityZone)-1]
 }
 
 func (i *InstanceDetails) FromString(s string) {
@@ -68,9 +87,14 @@ func (i InstanceDetails) String() string {
 	}
 }
 
-func (i InstanceDetails) GetRegion() string {
-	if len(i.AvailabilityZone) == 0 {
-		return "Unknown"
-	}
-	return i.AvailabilityZone[0 : len(i.AvailabilityZone)-1]
+type MixedInstanceTypesDetails struct {
+	InstanceDetails
+	InstanceTypes []string
+}
+
+func (m MixedInstanceTypesDetails) IsMixedInstanceTypes() bool {
+	return true
+}
+func (m MixedInstanceTypesDetails) GetInstanceTypes() []string {
+	return m.InstanceTypes
 }

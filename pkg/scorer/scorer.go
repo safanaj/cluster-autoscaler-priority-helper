@@ -27,6 +27,7 @@ import (
 	"github.com/safanaj/cluster-autoscaler-priority-helper/pkg/aws"
 	"github.com/safanaj/cluster-autoscaler-priority-helper/pkg/nodes"
 	"github.com/safanaj/cluster-autoscaler-priority-helper/pkg/spotadvisor"
+	"github.com/safanaj/cluster-autoscaler-priority-helper/pkg/utils"
 
 	"k8s.io/klog"
 )
@@ -104,17 +105,34 @@ func NewScorer(
 }
 
 func (s *Scorer) Run() {
-	lock := getLeaderLock(s)
+	if s.lec.LeaderElect {
+		lock := getLeaderLock(s)
 
-	for {
-		select {
-		case <-s.ctx.Done():
-			klog.Infof("Context canceled, exiting")
-			return
-		default:
-			// start the leader election code loop
-			runLeaderElection(s, lock)
+		for {
+			select {
+			case <-s.ctx.Done():
+				klog.Infof("Context canceled, exiting")
+				return
+			default:
+				// start the leader election code loop
+				runLeaderElection(s, lock)
+			}
 		}
+	} else {
+		for {
+			select {
+			case <-s.ctx.Done():
+				klog.Infof("Context canceled, exiting")
+				return
+			default:
+				err := s.Start()
+				if err != nil {
+					panic(err.Error())
+				}
+				<-s.internalCtx.Done()
+			}
+		}
+
 	}
 }
 
@@ -304,11 +322,12 @@ func (s *Scorer) updateConfigMap() error {
 
 func (s *Scorer) computeScores() map[int][]string {
 	var priorities map[int][]string
-	if asgsData, err := s.asgDiscoverer.GetASGsData(); err != nil {
+	if asgNames, err := s.asgDiscoverer.GetASGNames(); err != nil {
 		klog.Errorf("Error computing scores: %v", err)
 	} else {
 		priorities = make(map[int][]string)
-		for asgName, _ := range asgsData {
+		klog.V(2).Infof("computeScores GetASGNames() => %v\n", asgNames)
+		for _, asgName := range asgNames {
 			prio, err := s.computeScoreForASG(asgName)
 			if err != nil {
 				continue
@@ -327,37 +346,78 @@ func (s *Scorer) computeScores() map[int][]string {
 }
 
 func (s *Scorer) computeScoreForASG(asgName string) (int, error) {
+	var iDetails utils.InstanceDetails
 	prio := s.config.BasePriority
-	klog.V(4).Infof("Scorer compute priority for %s\t initial prio=%d", asgName, prio)
-	iDetails, err := s.asgDiscoverer.GetInstanceDetailsFor(asgName)
+	klog.V(3).Infof("Scorer compute priority for %s\t initial prio=%d", asgName, prio)
+	rDetails, err := s.asgDiscoverer.GetDetailsFor(asgName)
 	if err != nil {
 		klog.Errorf(err.Error())
 		return -1, err
 	}
-	// logic to score an instance type in a zone
-	if iDetails.IsSpot {
-		prio += s.config.BonusForSpot
-		klog.V(4).Infof("Scorer compute priority for %s\t prio+=%d because is spot (prio=%d)", asgName, s.config.BonusForSpot, prio)
+	if rDetails.IsMixedInstanceTypes() {
+		mDetails := rDetails.(utils.MixedInstanceTypesDetails)
+		iDetails.IsSpot = mDetails.InstanceDetails.IsSpot
+		iDetails.AvailabilityZone = mDetails.InstanceDetails.AvailabilityZone
+		// figure out which instance type will be bringed up assuming that
+		// on the ASG mixed instance type policy has strategy == capacity-optimized
+		// and that implies that AWS will choose the instance type with lower spot termination probability
+		// This assumption is speculative, be warned
+		//
+		// This assumption is speculative (and barely wrong), the capacity-optimized is more like a prediction,
+		// the spot termination probabiliy is a statistical data based on last 30-days
+		//
+		// prob := 10
+		// for _, it := range mDetails.InstanceTypes {
+		// 	itProb := s.spotAdvisor.GetProbabilityFor(mDetails.GetRegion(), "Linux", it)
+		// 	if prob > itProb {
+		// 		prob = itProb
+		// 		iDetails.InstanceType = it
+		// 	}
+		// }
+		//
+		// Try to be pessimist and look at the worst price, in case of MixedInstanceTypes we won't evaluate
+		// termination probability based on spot advisor data.
+		//
+		highest := float64(0.0)
+		for _, it := range mDetails.InstanceTypes {
+			if itPrice, found := s.pricer.GetPriceFor(it, iDetails.AvailabilityZone, iDetails.IsSpot); found && highest <= itPrice {
+				highest = itPrice
+				iDetails.InstanceType = it
+			}
+		}
 	} else {
-		prio -= s.config.MalusForOnDemand
-		klog.V(4).Infof("Scorer compute priority for %s\t prio-=%d because is ondemand (prio=%d)", asgName, s.config.MalusForOnDemand, prio)
+		iDetails = rDetails.(utils.InstanceDetails)
 	}
 
-	saving := s.spotAdvisor.GetSavingFor(iDetails.GetRegion(), "Linux", iDetails.InstanceType)
-	probability := s.spotAdvisor.GetProbabilityFor(iDetails.GetRegion(), "Linux", iDetails.InstanceType)
-	if saving >= 0 && probability >= 0 && iDetails.IsSpot {
-		// prio += saving
-		prio -= (probability * s.config.MalusForProbability)
-		klog.V(4).Infof("Scorer compute priority for %s\t (probability is %d) prio-=%d*%d (prio=%d)",
-			asgName, probability, probability, s.config.MalusForProbability, prio)
-		count := s.nodesDistribution.GetCountFor(iDetails.InstanceType, iDetails.AvailabilityZone, "spot")
+	if iDetails.IsSpot {
+		prio += s.config.BonusForSpot
+		klog.V(3).Infof("Scorer compute priority for %s\t prio+=%d because is spot (prio=%d)", asgName, s.config.BonusForSpot, prio)
+	} else {
+		prio -= s.config.MalusForOnDemand
+		klog.V(3).Infof("Scorer compute priority for %s\t prio-=%d because is ondemand (prio=%d)", asgName, s.config.MalusForOnDemand, prio)
+	}
+
+	if iDetails.IsSpot {
+		instanceTypes := rDetails.GetInstanceTypes()
+		count := 0
+		totProb := 0
+		for _, it := range instanceTypes {
+			count += s.nodesDistribution.GetCountFor(it, iDetails.AvailabilityZone, "spot")
+			totProb += s.spotAdvisor.GetProbabilityFor(iDetails.GetRegion(), "Linux", it)
+		}
+		avgProb := totProb / len(instanceTypes)
+
+		prio -= (avgProb * s.config.MalusForProbability)
+		klog.V(3).Infof("Scorer compute priority for %s\t (probability on average is %d) prio-=%d*%d (prio=%d) %v",
+			asgName, avgProb, avgProb, s.config.MalusForProbability, prio, instanceTypes)
+
 		prio -= (count * s.config.MalusForNodeDistribution)
-		klog.V(4).Infof("Scorer compute priority for %s\t (node distribution, same type in same zone) prio-=%d*%d (prio=%d)",
-			asgName, count, s.config.MalusForNodeDistribution, prio)
+		klog.V(3).Infof("Scorer compute priority for %s\t (node distribution, same type in same zone) prio-=%d*%d (prio=%d) %v",
+			asgName, count, s.config.MalusForNodeDistribution, prio, instanceTypes)
 	} else {
 		count := s.nodesDistribution.GetCountForAZ(iDetails.AvailabilityZone)
 		prio -= (count * s.config.MalusForNodeDistributionAZOnly)
-		klog.V(4).Infof("Scorer compute priority for %s\t (node distribution, same zone) prio-=%d*%d (prio=%d)", asgName, count, s.config.MalusForNodeDistributionAZOnly, prio)
+		klog.V(3).Infof("Scorer compute priority for %s\t (node distribution, same zone) prio-=%d*%d (prio=%d)", asgName, count, s.config.MalusForNodeDistributionAZOnly, prio)
 	}
 
 	// prefer smaller instances
@@ -369,13 +429,13 @@ func (s *Scorer) computeScoreForASG(asgName string) (int, error) {
 
 	if price, found := s.pricer.GetPriceFor(iDetails.InstanceType, iDetails.AvailabilityZone, iDetails.IsSpot); found {
 		prio -= int(price * float64(s.config.MalusForPrice))
-		klog.V(4).Infof("Scorer compute priority for %s\t (price) prio-=int(%f*%d) (prio=%d)", asgName, price, s.config.MalusForPrice, prio)
+		klog.V(3).Infof("Scorer compute priority for %s\t (price) prio-=int(%f*%d) (prio=%d)", asgName, price, s.config.MalusForPrice, prio)
 	} else {
 		klog.Warningf("no price information for %s", asgName)
 	}
 
 	if prio < 0 {
-		klog.V(4).Infof("Scorer compute priority for %s\t (prio=%d) return zero as lowest priority", asgName, prio)
+		klog.V(3).Infof("Scorer compute priority for %s\t (prio=%d) return zero as lowest priority", asgName, prio)
 		return 0, nil
 	}
 	return prio, nil
