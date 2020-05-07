@@ -56,7 +56,7 @@ func main() {
 
 	scorer := scorer.NewScorer(
 		context.Background(), flags.leaderElection,
-		cs, priorityConfigMapName, systemNamespace, flags.scorerRefreshInterval,
+		cs, flags.outConfigMapName, systemNamespace, flags.scorerRefreshInterval,
 		sad, asgD, nd, pricer,
 		flags.scorerConfig)
 
