@@ -63,6 +63,7 @@ func getLeaderElectionConfig(s *Scorer, lock resourcelock.Interface) leaderelect
 				// usually put your code
 				err := s.Start()
 				if err != nil {
+					s.Stop()
 					panic(err.Error())
 				}
 			},
