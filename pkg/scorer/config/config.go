@@ -22,6 +22,8 @@ type ScorerConfiguration struct {
 	MalusForNodeDistribution       int
 	MalusForNodeDistributionAZOnly int
 	MalusForPrice                  int
+
+	IgnoreAZs bool
 }
 
 func BindFlags(sc *ScorerConfiguration, fs *pflag.FlagSet) {
@@ -32,4 +34,5 @@ func BindFlags(sc *ScorerConfiguration, fs *pflag.FlagSet) {
 	fs.IntVar(&sc.MalusForNodeDistribution, "malus-for-nodes-distribution", malusForNodeDistribution, "")
 	fs.IntVar(&sc.MalusForNodeDistributionAZOnly, "malus-for-nodes-distribution-az-only", malusForNodeDistributionAZOnly, "")
 	fs.IntVar(&sc.MalusForPrice, "malus-for-price", malusForPrice, "")
+	fs.BoolVar(&sc.IgnoreAZs, "ignore-availability-zones", false, "")
 }

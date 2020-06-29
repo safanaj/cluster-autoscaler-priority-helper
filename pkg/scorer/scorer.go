@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -321,28 +322,57 @@ func (s *Scorer) updateConfigMap() error {
 }
 
 func (s *Scorer) computeScores() map[int][]string {
-	var priorities map[int][]string
+	var priorities map[int]map[string]struct{}
+	var resPriorities map[int][]string
+
 	if asgNames, err := s.asgDiscoverer.GetASGNames(); err != nil {
 		klog.Errorf("Error computing scores: %v", err)
 	} else {
-		priorities = make(map[int][]string)
+		priorities = make(map[int]map[string]struct{})
 		klog.V(2).Infof("computeScores GetASGNames() => %v\n", asgNames)
 		for _, asgName := range asgNames {
 			prio, err := s.computeScoreForASG(asgName)
 			if err != nil {
 				continue
 			}
+
+			nameForAsg := func(asgName string) string { return asgName }
+			if s.config.IgnoreAZs {
+				nameForAsg = func(asgName string) string {
+					// this assume that the asgName is ending with -<Availability Zone>
+					// and that for spot the string "-spot-" is included in the ASG name
+					if strings.Contains(asgName, "-spot-") {
+						return asgName[0 : len(asgName)-1]
+					}
+					return asgName
+				}
+			}
+
 			if asgs, found := priorities[prio]; found {
-				priorities[prio] = append(asgs, asgName)
+				asgs[nameForAsg(asgName)] = struct{}{}
+				// priorities[prio] = append(asgs, asgName)
 			} else {
-				priorities[prio] = append([]string{}, asgName)
+				priorities[prio] = map[string]struct{}{
+					nameForAsg(asgName): struct{}{},
+				}
+				// asgs := make(map[string]struct{})
+				// asgs[nameForAsg(asgName)] = struct{}{}
+				// priorities[prio] = append([]string{}, asgName)
 			}
 		}
 	}
-	for _, asgs := range priorities {
-		sort.Strings(asgs)
+
+	resPriorities = make(map[int][]string)
+
+	for prio, asgs := range priorities {
+		asgNames := []string{}
+		for asg, _ := range asgs {
+			asgNames = append(asgNames, asg)
+		}
+		sort.Strings(asgNames)
+		resPriorities[prio] = asgNames
 	}
-	return priorities
+	return resPriorities
 }
 
 func (s *Scorer) computeScoreForASG(asgName string) (int, error) {
@@ -401,8 +431,18 @@ func (s *Scorer) computeScoreForASG(asgName string) (int, error) {
 		instanceTypes := rDetails.GetInstanceTypes()
 		count := 0
 		totProb := 0
+
+		countNodes := func(it string, id utils.InstanceDetails) int {
+			return s.nodesDistribution.GetCountFor(it, id.AvailabilityZone, "spot")
+		}
+		if s.config.IgnoreAZs {
+			countNodes = func(it string, _ utils.InstanceDetails) int {
+				return s.nodesDistribution.GetCountForInstanceType(it, "spot")
+			}
+		}
 		for _, it := range instanceTypes {
-			count += s.nodesDistribution.GetCountFor(it, iDetails.AvailabilityZone, "spot")
+			// count += s.nodesDistribution.GetCountFor(it, iDetails.AvailabilityZone, "spot")
+			count += countNodes(it, iDetails)
 			totProb += s.spotAdvisor.GetProbabilityFor(iDetails.GetRegion(), "Linux", it)
 		}
 		avgProb := totProb / len(instanceTypes)
@@ -427,11 +467,13 @@ func (s *Scorer) computeScoreForASG(asgName string) (int, error) {
 	// 	prio -= ((cores * 2) + ramgb)
 	// }
 
-	if price, found := s.pricer.GetPriceFor(iDetails.InstanceType, iDetails.AvailabilityZone, iDetails.IsSpot); found {
-		prio -= int(price * float64(s.config.MalusForPrice))
-		klog.V(3).Infof("Scorer compute priority for %s\t (price) prio-=int(%f*%d) (prio=%d)", asgName, price, s.config.MalusForPrice, prio)
-	} else {
-		klog.Warningf("no price information for %s", asgName)
+	if !s.config.IgnoreAZs || !iDetails.IsSpot {
+		if price, found := s.pricer.GetPriceFor(iDetails.InstanceType, iDetails.AvailabilityZone, iDetails.IsSpot); found {
+			prio -= int(price * float64(s.config.MalusForPrice))
+			klog.V(3).Infof("Scorer compute priority for %s\t (price) prio-=int(%f*%d) (prio=%d)", asgName, price, s.config.MalusForPrice, prio)
+		} else {
+			klog.Warningf("no price information for %s", asgName)
+		}
 	}
 
 	if prio < 0 {

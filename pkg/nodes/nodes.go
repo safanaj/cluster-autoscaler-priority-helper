@@ -146,13 +146,32 @@ func (n *NodesDistribution) GetCountFor(args ...string) (count int) {
 	return
 }
 
-func (n *NodesDistribution) GetCountForInstanceType(instanceType string) (count int) {
+func (n *NodesDistribution) GetCountForInstanceType(args ...string) (count int) {
+	argslen := len(args)
+	if argslen < 1 {
+		return
+	}
+	instanceType := args[0]
+
 	for k, v := range n.data.instanceTypeAZCount {
 		iDetails := utils.InstanceDetails{}
 		(&iDetails).FromString(k)
 		if iDetails.InstanceType == instanceType {
-			count += v
+			if argslen > 1 {
+				if args[1] == "spot" {
+					if iDetails.IsSpot {
+						count += v
+					}
+				} else {
+					if !iDetails.IsSpot {
+						count += v
+					}
+				}
+			} else {
+				count += v
+			}
 		}
+
 	}
 	return
 }
