@@ -348,7 +348,11 @@ func (s *Scorer) computeScores() map[int][]string {
 	var resPriorities map[int][]string
 
 	// check if some hints are avilable to use them later
-	s.getOrCreateHints()
+	if err := s.getOrCreateHints(); err != nil {
+		klog.Errorf("Error preparing hints: %v", err)
+	} else {
+		klog.V(5).Infof("Successfully prepared hints")
+	}
 
 	if asgNames, err := s.asgDiscoverer.GetASGNames(); err != nil {
 		klog.Errorf("Error computing scores: %v", err)
