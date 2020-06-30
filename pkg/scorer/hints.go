@@ -72,6 +72,8 @@ func (s *Scorer) getOrCreateHints() error {
 			cm.Data[prioKey] = prioString
 			needsUpdate = true
 		}
+		// reset the hinted priorities map
+		s.hints.priorities = nil
 		if err := yaml.Unmarshal([]byte(prioString), &s.hints.priorities); err != nil {
 			klog.Errorf("Can't parse YAML with hinted priorities in the configmap: %v", err)
 		}

@@ -377,14 +377,10 @@ func (s *Scorer) computeScores() map[int][]string {
 
 			if asgs, found := priorities[prio]; found {
 				asgs[nameForAsg(asgName)] = struct{}{}
-				// priorities[prio] = append(asgs, asgName)
 			} else {
 				priorities[prio] = map[string]struct{}{
 					nameForAsg(asgName): struct{}{},
 				}
-				// asgs := make(map[string]struct{})
-				// asgs[nameForAsg(asgName)] = struct{}{}
-				// priorities[prio] = append([]string{}, asgName)
 			}
 		}
 	}
@@ -401,17 +397,19 @@ func (s *Scorer) computeScores() map[int][]string {
 	}
 
 	// merge priorities with hinted ones
+	klog.V(5).Infof("Priorities before hints: %v", resPriorities)
+	klog.V(5).Infof("Hints for priorities: %v", s.hints.priorities)
 	for prio, hinted := range s.hints.priorities {
 		if asgs, found := resPriorities[prio]; found {
 			for _, hint := range hinted {
 				asgs = append(asgs, hint)
 			}
-			// resPriorities[prio] = asgs
 		} else {
 			resPriorities[prio] = hinted
 		}
 	}
 
+	klog.V(5).Infof("Priorities after hints: %v", resPriorities)
 	return resPriorities
 }
 
