@@ -61,7 +61,7 @@ func main() {
 		flags.scorerConfig)
 
 	c := make(chan os.Signal, 1)
-	signal.Notify(c, syscall.SIGINT, syscall.SIGTERM)
+	signal.Notify(c, syscall.SIGQUIT, syscall.SIGINT, syscall.SIGTERM)
 	go func() {
 		<-c
 		scorer.Exit()
