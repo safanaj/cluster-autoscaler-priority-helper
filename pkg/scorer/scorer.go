@@ -68,6 +68,7 @@ type Scorer struct {
 	lastChange time.Time
 
 	config config.ScorerConfiguration
+	hints  Hints
 }
 
 func NewScorer(
@@ -164,15 +165,21 @@ func (s *Scorer) Start() error {
 	cmEventHandler := cache.FilteringResourceEventHandler{
 		FilterFunc: func(obj interface{}) bool {
 			if cm, ok := obj.(*corev1.ConfigMap); ok {
-				return cm.ObjectMeta.Name == s.outConfigMapName
+				return cm.ObjectMeta.Name == s.outConfigMapName ||
+					cm.ObjectMeta.Name == s.config.HintsConfigMapName
 			}
 			return false
 		},
 		Handler: cache.ResourceEventHandlerFuncs{
 			UpdateFunc: func(_, obj interface{}) {
-				klog.V(3).Infof("Updating config map because it was changed, last update was at %s", s.lastChange)
-				if err := s.updateConfigMap(); err != nil {
-					klog.Errorf("Error udating config map because of configmap changes: %v", err)
+				if cm, ok := obj.(*corev1.ConfigMap); ok {
+					klog.V(3).Infof("Updating config map because it (%s) was changed, last update was at %s",
+						cm.ObjectMeta.Name, s.lastChange)
+					if err := s.updateConfigMap(); err != nil {
+						klog.Errorf("Error udating config map because of configmap changes: %v", err)
+					}
+				} else {
+					klog.Error("Skipping update, event is not related to a config map")
 				}
 			},
 		},
@@ -230,11 +237,57 @@ func (s *Scorer) Start() error {
 	return nil
 }
 
+func (s *Scorer) getOrUpdateOutputConfigMapChecksum(yamlData []byte, checksum string) (string, error) {
+	var oldChecksum string
+	var err error
+	var cm *corev1.ConfigMap
+
+	cm, err = s.cmLister.ConfigMaps(s.namespace).Get(s.outConfigMapName)
+	if err == nil {
+		currentPrioritiesStr, ok := cm.Data["priorities"]
+		if ok {
+			oldChecksum = fmt.Sprintf("%x", sha256.Sum256([]byte(currentPrioritiesStr)))
+			klog.V(4).Infof("old data(%s):\n%s", oldChecksum, currentPrioritiesStr)
+			klog.V(4).Infof("new data(%s):\n%s", checksum, string(yamlData))
+		} else {
+			// this is a trick to force an out ConfigMap update because it is missing the mandatory key priorities
+			// so the caller can distinguish between no error because creation or no error but update is needed
+			oldChecksum = "priorities key is mandatory"
+		}
+	} else {
+		statusErr, ok := err.(*errors.StatusError)
+		if !ok {
+			return oldChecksum, err
+		}
+		if statusErr.Status().Reason == metav1.StatusReasonNotFound {
+			_, err := s.clientset.CoreV1().ConfigMaps(s.namespace).
+				Create(&corev1.ConfigMap{
+					ObjectMeta: metav1.ObjectMeta{
+						Namespace: s.namespace,
+						Name:      s.outConfigMapName,
+					},
+					Data: map[string]string{
+						"priorities": string(yamlData),
+					},
+				})
+			if err != nil {
+				klog.Errorf("Error creating %s/%s config map: %v", s.namespace, s.outConfigMapName, err)
+				return oldChecksum, err
+			}
+			s.lastChange = time.Now()
+			return oldChecksum, nil
+		} else {
+			klog.Errorf("Error getting %s/%s config map: %v", s.namespace, s.outConfigMapName, err)
+			return oldChecksum, err
+		}
+	}
+	return oldChecksum, err
+}
+
 func (s *Scorer) updateConfigMap() error {
 	var oldChecksum string
 	var patchBytes, yamlData []byte
 	var err error
-	var cm *corev1.ConfigMap
 
 	priorities := s.computeScores()
 	if len(priorities) == 0 {
@@ -257,42 +310,11 @@ func (s *Scorer) updateConfigMap() error {
 	default:
 	}
 
-	cm, err = s.cmLister.ConfigMaps(s.namespace).Get(s.outConfigMapName)
-	if err == nil {
-		currentPrioritiesStr, ok := cm.Data["priorities"]
-		if ok {
-			oldChecksum = fmt.Sprintf("%x", sha256.Sum256([]byte(currentPrioritiesStr)))
-			klog.V(4).Infof("old data(%s):\n%s", oldChecksum, currentPrioritiesStr)
-			klog.V(4).Infof("new data(%s):\n%s", checksum, string(yamlData))
-		} else {
-			cm.Data["priorities"] = string(yamlData)
-		}
-	} else {
-		statusErr, ok := err.(*errors.StatusError)
-		if !ok {
-			return err
-		}
-		if statusErr.Status().Reason == metav1.StatusReasonNotFound {
-			_, err := s.clientset.CoreV1().ConfigMaps(s.namespace).
-				Create(&corev1.ConfigMap{
-					ObjectMeta: metav1.ObjectMeta{
-						Namespace: s.namespace,
-						Name:      s.outConfigMapName,
-					},
-					Data: map[string]string{
-						"priorities": string(yamlData),
-					},
-				})
-			if err != nil {
-				klog.Errorf("Error creating %s/%s config map: %v", s.namespace, s.outConfigMapName, err)
-				return err
-			}
-			s.lastChange = time.Now()
-			return nil
-		} else {
-			klog.Errorf("Error gettting %s/%s config map: %v", s.namespace, s.outConfigMapName, err)
-			return err
-		}
+	oldChecksum, err = s.getOrUpdateOutputConfigMapChecksum(yamlData, checksum)
+	if err != nil {
+		return err
+	} else if oldChecksum == "" /* a new fresh created ConfigMap, nothing to do */ {
+		return nil
 	}
 
 	klog.V(3).Infof("Update config map checking checksums %s == %s : %t", checksum, oldChecksum, oldChecksum == checksum)
@@ -325,6 +347,9 @@ func (s *Scorer) computeScores() map[int][]string {
 	var priorities map[int]map[string]struct{}
 	var resPriorities map[int][]string
 
+	// check if some hints are avilable to use them later
+	s.getOrCreateHints()
+
 	if asgNames, err := s.asgDiscoverer.GetASGNames(); err != nil {
 		klog.Errorf("Error computing scores: %v", err)
 	} else {
@@ -333,8 +358,10 @@ func (s *Scorer) computeScores() map[int][]string {
 		for _, asgName := range asgNames {
 			prio, err := s.computeScoreForASG(asgName)
 			if err != nil {
+				klog.V(2).Infof("computeScoreForASG(%s) => error %v\n", asgName, err)
 				continue
 			}
+			klog.V(2).Infof("computeScoreForASG(%s) => %d\n", asgName, prio)
 
 			nameForAsg := func(asgName string) string { return asgName }
 			if s.config.IgnoreAZs {
@@ -372,6 +399,19 @@ func (s *Scorer) computeScores() map[int][]string {
 		sort.Strings(asgNames)
 		resPriorities[prio] = asgNames
 	}
+
+	// merge priorities with hinted ones
+	for prio, hinted := range s.hints.priorities {
+		if asgs, found := resPriorities[prio]; found {
+			for _, hint := range hinted {
+				asgs = append(asgs, hint)
+			}
+			// resPriorities[prio] = asgs
+		} else {
+			resPriorities[prio] = hinted
+		}
+	}
+
 	return resPriorities
 }
 
@@ -473,6 +513,24 @@ func (s *Scorer) computeScoreForASG(asgName string) (int, error) {
 			klog.V(3).Infof("Scorer compute priority for %s\t (price) prio-=int(%f*%d) (prio=%d)", asgName, price, s.config.MalusForPrice, prio)
 		} else {
 			klog.Warningf("no price information for %s", asgName)
+		}
+	}
+
+	// check for hinted bonus/malus
+	for value, regexps := range s.hints.bonus {
+		for _, re := range regexps {
+			if re.FindStringIndex(asgName) != nil {
+				prio += value
+				klog.V(3).Infof("Scorer compute priority for %s\t (bonus hints) prio+=%d (prio=%d)", asgName, value, prio)
+			}
+		}
+	}
+	for value, regexps := range s.hints.malus {
+		for _, re := range regexps {
+			if re.FindStringIndex(asgName) != nil {
+				prio -= value
+				klog.V(3).Infof("Scorer compute priority for %s\t (malus hints) prio-=%d (prio=%d)", asgName, value, prio)
+			}
 		}
 	}
 

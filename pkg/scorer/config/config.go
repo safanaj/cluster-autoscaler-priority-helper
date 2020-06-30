@@ -12,6 +12,8 @@ const (
 	malusForNodeDistribution       = 10
 	malusForNodeDistributionAZOnly = 10
 	malusForPrice                  = 100
+
+	hintsConfigMapName = "cluster-autoscaler-priority-hints"
 )
 
 type ScorerConfiguration struct {
@@ -23,7 +25,8 @@ type ScorerConfiguration struct {
 	MalusForNodeDistributionAZOnly int
 	MalusForPrice                  int
 
-	IgnoreAZs bool
+	IgnoreAZs          bool
+	HintsConfigMapName string
 }
 
 func BindFlags(sc *ScorerConfiguration, fs *pflag.FlagSet) {
@@ -35,4 +38,5 @@ func BindFlags(sc *ScorerConfiguration, fs *pflag.FlagSet) {
 	fs.IntVar(&sc.MalusForNodeDistributionAZOnly, "malus-for-nodes-distribution-az-only", malusForNodeDistributionAZOnly, "")
 	fs.IntVar(&sc.MalusForPrice, "malus-for-price", malusForPrice, "")
 	fs.BoolVar(&sc.IgnoreAZs, "ignore-availability-zones", false, "")
+	fs.StringVar(&sc.HintsConfigMapName, "hints-configmap", hintsConfigMapName, "")
 }
