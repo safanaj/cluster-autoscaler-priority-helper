@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
+	"math"
 	"sort"
 	"strings"
 	"sync"
@@ -487,9 +488,9 @@ func (s *Scorer) computeScoreForASG(asgName string) (int, error) {
 			count += countNodes(it, iDetails)
 			totProb += s.spotAdvisor.GetProbabilityFor(iDetails.GetRegion(), "Linux", it)
 		}
-		avgProb := totProb / len(instanceTypes)
+		avgProb := float64(totProb) / float64(len(instanceTypes))
 
-		prio -= (avgProb * s.config.MalusForProbability)
+		prio -= int(math.Round(avgProb * float64(s.config.MalusForProbability)))
 		klog.V(3).Infof("Scorer compute priority for %s\t (probability on average is %d) prio-=%d*%d (prio=%d) %v",
 			asgName, avgProb, avgProb, s.config.MalusForProbability, prio, instanceTypes)
 
