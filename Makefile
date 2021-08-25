@@ -1,4 +1,4 @@
-VERSION = 0.9
+VERSION = 0.10
 REGISTRY ?= registry2.swarm.devfactory.com/central
 FLAGS =
 ENVVAR = CGO_ENABLED=0
@@ -6,7 +6,8 @@ GOOS ?= linux
 LDFLAGS ?=
 COMPONENT = cluster-autoscaler-priority-helper
 
-DOCKER_IMAGE = "${REGISTRY}/${COMPONENT}:${VERSION}"
+DOCKER_IMAGE_NAME = "${REGISTRY}/${COMPONENT}"
+DOCKER_IMAGE = "${DOCKER_IMAGE_NAME}:${VERSION}"
 
 K8S_VERSION = 1.14.8
 CLIGO_VERSION = v11.0.1-0.20191029005444-8e4128053008+incompatible
@@ -47,12 +48,10 @@ build: golang
 static: golang
 	@echo "--> Compiling the static binary"
 	#$(ENVVAR) GOOS=$(GOOS) go install $(LDFLAGS) -v ./pkg/...
-	$(ENVVAR) GOARCH=amd64 GOOS=$(GOOS) \
+	$(ENVVAR) GOOS=$(GOOS) \
 		go build -mod=vendor -a -tags netgo \
 			-ldflags "-w -X main.version=${VERSION}" -v -o ${COMPONENT} ./cmd/...
 
 test:
 	$(ENVVAR) GOOS=$(GOOS) go test -v ./...
 
-docker: install_deps deps static
-	docker build -t ${DOCKER_IMAGE} .
