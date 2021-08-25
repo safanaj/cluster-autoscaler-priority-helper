@@ -37,9 +37,7 @@ IMPORTANT: doen't make any sense to use ASGs with MixedInstancesPolicy and strat
 
 ## Build it
 
-`make build` or `make static`
-
-To build a docker image `make docker` , it will build a static binary and put into a gcr.io/distroless/static base image.
+http://jive.jenkins.aureacentral.com/job/Infrastructure/job/K8S%20Addons/job/cluster-autoscaler-priority-helper/
 
 ## Running it
 
